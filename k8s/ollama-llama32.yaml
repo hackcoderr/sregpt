@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sregpt-ollama-pvc
+  namespace: sregpt
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sregpt-ollama
+  namespace: sregpt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sregpt-ollama
+  template:
+    metadata:
+      labels:
+        app: sregpt-ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ollama serve &
+              server_pid=$!
+              sleep 5
+              ollama pull llama3.2
+              wait "$server_pid"
+          ports:
+            - containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 15
+            periodSeconds: 10
+      volumes:
+        - name: ollama-data
+          persistentVolumeClaim:
+            claimName: sregpt-ollama-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sregpt-ollama
+  namespace: sregpt
+spec:
+  selector:
+    app: sregpt-ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434

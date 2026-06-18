@@ -1,1 +1,5 @@
 .venv/
+.DS_Store
+__pycache__/*
+*.pyc
+__pycache__/app.cpython-314.pyc

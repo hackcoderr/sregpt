@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sregpt-api
+  namespace: sregpt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sregpt-api
+  template:
+    metadata:
+      labels:
+        app: sregpt-api
+    spec:
+      containers:
+        - name: api
+          image: sregpt-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: sregpt-config
+            - secretRef:
+                name: sregpt-postgres-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sregpt-api
+  namespace: sregpt
+spec:
+  selector:
+    app: sregpt-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

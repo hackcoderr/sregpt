@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sregpt-ingest
+  namespace: sregpt
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: sregpt-ingest
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ingest
+          image: sregpt-ingest:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: sregpt-config
+            - secretRef:
+                name: sregpt-postgres-secret

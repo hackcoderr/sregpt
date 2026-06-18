@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sregpt-config
+  namespace: sregpt
+data:
+  POSTGRES_HOST: sregpt-postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: sregpt
+  PGVECTOR_TABLE: incident_vectors
+  EMBEDDING_MODEL: all-MiniLM-L6-v2
+  MATCH_THRESHOLD: "0.55"
+  OLLAMA_HOST: http://sregpt-ollama:11434
+  OLLAMA_MODEL: llama3.2
+  ISSUES_CSV_PATH: data/issues.csv
+  PGVECTOR_BATCH_SIZE: "200"

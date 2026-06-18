@@ -1,6 +1,8 @@
 # SREGPT
 
-SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevOps incidents. It uses FastAPI for the API layer, FAISS for similarity search over past incident records, SentenceTransformers for embeddings, and Ollama with `deepseek-coder:6.7b` for local answer generation.
+SREGPT is a retrieval-augmented troubleshooting assistant for SRE and DevOps incidents. It uses FastAPI for the API layer, PostgreSQL with `pgvector` for similarity search over past incident records, SentenceTransformers for embeddings, and Ollama with `llama3.2` for answer generation.
+
+The repo is structured so the API runtime and ingestion runtime can ship as separate container images while reusing shared Python modules.
 
 ## Preview
 
@@ -27,7 +29,7 @@ SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevO
    └──────┬─────────────────────┘
           ↓
    ┌────────────────────────────┐
-   │  Vector Search (FAISS)     │
+   │ PostgreSQL + pgvector      │
    └──────┬─────────────────────┘
           ↓
    ┌────────────────────────────┐
@@ -44,8 +46,7 @@ SREGPT is a local retrieval-augmented troubleshooting assistant for SRE and DevO
      ↓                  ↓
 ┌──────────────┐  ┌────────────────┐
 │ Return KB    │  │  Ollama LLM    │
-│ Solution     │  │ (deepseek-     │
-│ + Ticket     │  │ coder:6.7b)    │
+│ Solution     │  │  (llama3.2)    │
 └──────┬───────┘  └──────┬─────────┘
        ↓                ↓
        └──────────→ Final Response
@@ -56,8 +57,8 @@ Runtime flow:
 1. The user asks a troubleshooting question from the browser UI.
 2. FastAPI receives the request and passes it into the query-processing flow.
 3. The query is embedded with `all-MiniLM-L6-v2` using SentenceTransformers.
-4. FAISS searches the internal incident vectors built from the CSV knowledge base.
-5. FAISS returns the top 50 nearest incident matches.
+4. PostgreSQL with `pgvector` searches the stored incident embeddings built from the CSV knowledge base.
+5. PostgreSQL returns the top 50 nearest incident matches.
 6. The app converts raw scores into a simple confidence value and filters out low-relevance matches.
 7. The filtered result set is capped before being sent to Ollama as grounded incident context.
 8. Ollama generates the final streamed troubleshooting response.
@@ -67,11 +68,12 @@ Runtime flow:
 - Python 3.9+
 - FastAPI
 - Uvicorn
-- FAISS
+- PostgreSQL
+- pgvector
 - SentenceTransformers
 - Pandas
 - Ollama
-- DeepSeek Coder 6.7B via Ollama
+- Llama 3.2 via Ollama
 - HTML/CSS/JavaScript frontend
 
 ## Project Structure
@@ -79,13 +81,24 @@ Runtime flow:
 ```text
 sregpt/
 ├── app.py                # FastAPI app and streaming endpoint
-├── embeddings.py         # Builds FAISS index from CSV incident data
+├── embeddings.py         # Ingestion entrypoint for loading vectors into PostgreSQL
+├── sregpt/
+│   ├── config.py         # Shared env/config loading
+│   └── vector_store.py   # Shared pgvector + embedding utilities
+├── Dockerfile.api        # API image build
+├── Dockerfile.ingest     # Ingestion image build
+├── requirements.api.txt
+├── requirements.common.txt
+├── requirements.ingest.txt
 ├── index.html            # Frontend chat UI
+├── k8s/
+│   ├── sregpt-api.yaml         # API deployment/service
+│   ├── sregpt-config.yaml      # Shared runtime config
+│   ├── sregpt-ingest-job.yaml  # Ingestion batch job
+│   └── postgres-pgvector.yaml  # PostgreSQL pod/service/PVC manifest
 ├── requirements.txt      # Python dependencies
 ├── data/
-│   ├── issues.csv        # Source incident dataset
-│   ├── index.faiss       # Generated FAISS index
-│   └── data.pkl          # Normalized incident records
+│   └── issues.csv        # Source incident dataset
 └── .venv/                # Local virtual environment (ignored by git)
 ```
 
@@ -95,8 +108,7 @@ Make sure these are available on your machine:
 
 - Python 3.9 or later
 - `pip`
-- Ollama installed locally
-- The `deepseek-coder:6.7b` model pulled in Ollama
+- Kubernetes access to deploy PostgreSQL and Ollama pods
 
 ## Setup
 
@@ -113,20 +125,62 @@ Install dependencies:
 pip install -r requirements.txt
 ```   
 
+## Container Strategy
+
+Use separate images for serving and ingestion:
+
+- `Dockerfile.api` builds the FastAPI serving image
+- `Dockerfile.ingest` builds the ingestion image that runs `embeddings.py`
+- `sregpt/config.py` and `sregpt/vector_store.py` hold shared logic so the images stay separate without duplicating code
+
+Build them locally:
+
+```sh
+docker build -f Dockerfile.api -t sregpt-api:latest .
+docker build -f Dockerfile.ingest -t sregpt-ingest:latest .
+```
+
+## Start PostgreSQL with pgvector
+
+Launch the database pod and service:
+
+```sh
+kubectl apply -f k8s/postgres-pgvector.yaml
+kubectl apply -f k8s/sregpt-config.yaml
+```
+
+For local testing outside Kubernetes, port-forward the service:
+
+```sh
+kubectl port-forward svc/sregpt-postgres 5432:5432
+```
+
+Export the database connection settings before loading data or running the API:
+
+```sh
+export POSTGRES_HOST=127.0.0.1
+export POSTGRES_PORT=5432
+export POSTGRES_DB=sregpt
+export POSTGRES_USER=sregpt
+export POSTGRES_PASSWORD=sregpt123
+```
+
 ## Prepare the Knowledge Base
 
 The retrieval layer uses [`data/issues.csv`](/Users/sackashyap/Documents/mytech/sregpt/data/issues.csv) as the source dataset.
 
-To build or rebuild the FAISS index:
+To build or rebuild the vector table in PostgreSQL:
 
 ```sh
-python embeddings.py a
+python embeddings.py
 ```
 
-This generates:
+To run the same load inside Kubernetes with the ingestion image:
 
-- [`data/index.faiss`](/Users/sackashyap/Documents/mytech/sregpt/data/index.faiss)
-- [`data/data.pkl`](/Users/sackashyap/Documents/mytech/sregpt/data/data.pkl)
+```sh
+kubectl apply -f k8s/sregpt-ingest-job.yaml
+kubectl logs -n sregpt job/sregpt-ingest -f
+```
 
 Expected CSV columns:
 
@@ -134,24 +188,25 @@ Expected CSV columns:
 - `Issue Solution`
 - `Ticket ID`
 
-## Start Ollama
+## Start Ollama with Llama 3.2
 
-In a separate terminal, start the Ollama server:
+Launch the Ollama pod and service:
 
 ```sh
-ollama serve
+kubectl apply -f k8s/ollama-llama32.yaml
 ```
 
-If the model is not available yet, pull it first:
+The pod starts `ollama serve`, pulls `llama3.2`, and exposes it inside the cluster at:
 
-```sh
-ollama pull deepseek-coder:6.7b
+```text
+http://sregpt-ollama:11434
 ```
 
-You can test the model with:
+Set these environment variables in the FastAPI deployment:
 
 ```sh
-ollama run deepseek-coder:6.7b
+export OLLAMA_HOST=http://sregpt-ollama:11434
+export OLLAMA_MODEL=llama3.2
 ```
 
 ## Run the API
@@ -171,7 +226,7 @@ http://127.0.0.1:8000
 Health check:
 
 ```sh
-curl http://127.0.0.1:8000/
+curl http://127.0.0.1:8000/health
 ```
 
 Example query:
@@ -180,11 +235,15 @@ Example query:
 curl "http://127.0.0.1:8000/ask-stream?query=node%20not%20ready"
 ```
 
+To run the API in Kubernetes after building and pushing the image:
+
+```sh
+kubectl apply -f k8s/sregpt-api.yaml
+```
+
 ## Frontend
 
-The browser UI is in [`index.html`](/Users/sackashyap/Documents/mytech/sregpt/index.html).
-
-Open it directly in a browser, or serve the folder locally with any static file server. The page calls the FastAPI endpoint:
+The browser UI is served by FastAPI at `/` from [`index.html`](/Users/sackashyap/Documents/mytech/sregpt/index.html). It calls the same-host API endpoint:
 
 ```text
 GET /ask-stream?query=...
@@ -202,13 +261,17 @@ The UI supports:
 
 ### `GET /`
 
+Serves the browser UI from `index.html`.
+
+### `GET /health`
+
 Simple health endpoint.
 
 Example response:
 
 ```json
 {
-  "message": "SREGPT Reasoning Mode 🚀"
+  "message": "SREGPT Reasoning Mode with PostgreSQL pgvector"
 }
 ```
 
@@ -216,10 +279,10 @@ Example response:
 
 Streams a troubleshooting response built from:
 
-- top 50 FAISS matches from the internal ticket dataset
-- score-based relevance filtering with a `0.6` threshold
-- a final capped context of up to 20 incidents
-- `deepseek-coder:6.7b` generation through Ollama
+- top 50 PostgreSQL `pgvector` matches from the internal ticket dataset
+- score-based relevance filtering with a `0.55` threshold
+- a final capped context of up to 5 incidents
+- `llama3.2` generation through Ollama
 
 ## How Retrieval Works
 
@@ -232,18 +295,30 @@ Streams a troubleshooting response built from:
 [`app.py`](/Users/sackashyap/Documents/mytech/sregpt/app.py) then:
 
 1. embeds the user query
-2. searches the FAISS index with `k=50`
-3. converts each raw score into a simple confidence estimate using `1 / (1 + score)`
-4. filters out low-relevance matches using a `0.6` threshold
-5. caps the filtered context to 20 incidents to avoid overloading the prompt
-6. sends the remaining incident context to Ollama
+2. searches PostgreSQL with `pgvector` using `k=12`
+3. converts cosine distance into a simple confidence estimate using `1 - distance`
+4. filters out low-relevance matches using a `0.55` threshold
+5. caps the filtered context to 5 incidents to avoid overloading the prompt
+6. sends the remaining incident context to Ollama with a shorter prompt and warm keep-alive
 7. streams the final grounded answer back to the client
+
+Current LLM settings in [`app.py`](/Users/sackashyap/Downloads/mytech/sregpt/app.py):
+
+- Ollama endpoint: `OLLAMA_HOST` defaulting to `http://localhost:11434`
+- Ollama model: `OLLAMA_MODEL` defaulting to `llama3.2`
 
 Current retrieval settings in [`app.py`](/Users/sackashyap/Documents/mytech/sregpt/app.py):
 
-- FAISS search scope: `k=50`
-- Filtering function: `filter_results(results, scores, threshold=0.6)`
-- Max incident context sent to the LLM: `20`
+- PostgreSQL `pgvector` search scope: `k=12`
+- Filtering function: `filter_results(results, scores, threshold=0.55)`
+- Max incident context sent to the LLM: `5`
+
+You can tune these if you want more recall:
+
+- `SEARCH_K` controls the initial vector search fan-out
+- `MAX_CONTEXT_INCIDENTS` caps how many incidents reach the prompt
+- `OLLAMA_NUM_PREDICT` limits the answer length
+- `OLLAMA_KEEP_ALIVE` keeps the model warm between requests
 
 ## Common Commands
 
@@ -275,28 +350,30 @@ uvicorn app:app --reload
 
 ### `could not connect to ollama server`
 
-Start Ollama:
+Check that the Ollama pod is running and the service is reachable:
 
 ```sh
-ollama serve
+kubectl get pods -n sregpt
+kubectl get svc -n sregpt
 ```
 
-### `could not open data/index.faiss`
+### `could not connect to server at "127.0.0.1", port 5432`
 
-Build the index:
+Start the PostgreSQL service or port-forward it from Kubernetes, then rerun `python embeddings.py`.
 
 ```sh
-python embeddings.py
+kubectl port-forward -n sregpt svc/sregpt-postgres 5432:5432
 ```
 
 ### `500 Internal Server Error` from `/ask-stream`
 
 Check:
 
-- Ollama is running
-- `deepseek-coder:6.7b` is available locally
-- `data/issues.csv` exists
-- `data/index.faiss` and `data/data.pkl` were built from the current CSV
+- `/health` returns `200`
+- the `incident_vectors` table exists
+- PostgreSQL has rows from `python embeddings.py`
+- `OLLAMA_HOST` points at `http://sregpt-ollama:11434` in the cluster
+- `OLLAMA_MODEL` is set to `llama3.2`
 
 ## Git Ignore
 

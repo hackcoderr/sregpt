@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sregpt-postgres-secret
+  namespace: sregpt
+type: Opaque
+stringData:
+  POSTGRES_DB: sregpt
+  POSTGRES_USER: sregpt
+  POSTGRES_PASSWORD: sregpt123
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sregpt-postgres-pvc
+  namespace: sregpt
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sregpt-postgres
+  namespace: sregpt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sregpt-postgres
+  template:
+    metadata:
+      labels:
+        app: sregpt-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: sregpt-postgres-secret
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: sregpt-postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sregpt-postgres
+  namespace: sregpt
+spec:
+  selector:
+    app: sregpt-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

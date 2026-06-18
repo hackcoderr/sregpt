@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.common.txt requirements.ingest.txt ./
+RUN pip install --no-cache-dir -r requirements.ingest.txt
+
+COPY embeddings.py ./
+COPY data ./data
+COPY sregpt ./sregpt
+
+CMD ["python", "embeddings.py"]
